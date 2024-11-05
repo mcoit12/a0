@@ -3,9 +3,7 @@ from functools import wraps
 import os
 from pathlib import Path
 import threading
-import uuid
-from flask import Flask, request, jsonify, Response
-from flask_basicauth import BasicAuth
+from quart import Quart, request, jsonify, Response
 from agent import AgentContext
 from initialize import initialize
 from python.helpers import files
@@ -14,21 +12,120 @@ from python.helpers.print_style import PrintStyle
 from python.helpers.dotenv import load_dotenv
 from python.helpers import persist_chat
 
-
-# initialize the internal Flask server
-app = Flask("app", static_folder=get_abs_path("./webui"), static_url_path="/")
+# initialize the internal Quart server
+app = Quart("app", static_folder=get_abs_path("./webui"), static_url_path="/")
 app.config["JSON_SORT_KEYS"] = False  # Disable key sorting in jsonify
 
 lock = threading.Lock()
 
-# Set up basic authentication, name and password from .env variables
-app.config["BASIC_AUTH_USERNAME"] = (
-    os.environ.get("BASIC_AUTH_USERNAME") or "admin"
-)  # default name
-app.config["BASIC_AUTH_PASSWORD"] = (
-    os.environ.get("BASIC_AUTH_PASSWORD") or "admin"
-)  # default pass
-basic_auth = BasicAuth(app)
+
+# Basic Authentication setup
+def check_auth(username, password):
+    return username == os.environ.get(
+        "BASIC_AUTH_USERNAME", "admin"
+    ) and password == os.environ.get("BASIC_AUTH_PASSWORD", "admin")
+
+
+def authenticate():
+    return Response(
+        "Could not verify your access level for that URL.\n"
+        "You have to login with proper credentials.",
+        401,
+        {"WWW-Authenticate": 'Basic realm="Login Required"'},
+    )
+
+
+def requires_auth(f):
+    @wraps(f)
+    async def decorated(*args, **kwargs):
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return await f(*args, **kwargs)
+
+    return decorated
+
+
+# Use absolute path for CONFIG_FILE
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+
+
+def load_selected_models():
+    if not os.path.exists(CONFIG_FILE):
+        return {
+            "chat_model": "gpt-4o-mini",
+            "utility_model": "gpt-4o-mini",
+            "embedding_model": "text-embedding-3-small",
+        }
+    with open(CONFIG_FILE, "r") as f:
+        return json.load(f)
+
+
+def save_selected_models(models):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(models, f, indent=4)
+
+
+@app.route("/api/models", methods=["GET"])
+async def get_models():
+    try:
+        selected_models = load_selected_models()
+        available_models = {
+            "chat_model": [
+                "claude-3-5-sonnet-20241022"
+            ],
+            "utility_model": [
+                "claude-3-5-sonnet-20241022"
+            ],
+            "embedding_model": [
+                "text-embedding-3-small"
+            ]
+        }
+
+        # Ensure selected models exist in available models, otherwise use defaults
+        for model_type in ["chat_model", "utility_model", "embedding_model"]:
+            if model_type not in selected_models or selected_models[model_type] not in available_models[model_type]:
+                selected_models[model_type] = available_models[model_type][0]
+        
+        models = {
+            "chat_model": selected_models["chat_model"],
+            "utility_model": selected_models["utility_model"],
+            "embedding_model": selected_models["embedding_model"]
+        }
+        
+        return jsonify({
+            "ok": True,
+            "models": models,
+            "available_models": available_models
+        })
+
+    except Exception as e:
+        print(f"Error fetching models: {e}")
+        return jsonify({
+            "ok": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/api/models", methods=["POST"])
+async def update_models():
+    data = await request.get_json()
+    required_keys = {"chat_model", "utility_model", "embedding_model"}
+    if not required_keys.issubset(data.keys()):
+        return jsonify({"error": "Missing model parameters"}), 400
+    save_selected_models(data)
+    # Reinitialize AgentConfig if necessary
+    try:
+        config = initialize(
+            chat_model=data["chat_model"],
+            utility_model=data["utility_model"],
+            embedding_model=data["embedding_model"],
+        )
+        print(f"Updated models: {data}")  # Debugging Statement
+        return jsonify({"message": "Models updated successfully"}), 200
+    except Exception as e:
+        print(f"Error initializing models: {e}")  # Debugging Statement
+        return jsonify({"error": str(e)}), 500
 
 
 # get context to run agent zero in
@@ -45,28 +142,9 @@ def get_context(ctxid: str):
         return AgentContext(config=initialize(), id=ctxid)
 
 
-# Now you can use @requires_auth function decorator to require login on certain pages
-def requires_auth(f):
-    @wraps(f)
-    async def decorated(*args, **kwargs):
-        auth = request.authorization
-        if not auth or not (
-            auth.username == app.config["BASIC_AUTH_USERNAME"]
-            and auth.password == app.config["BASIC_AUTH_PASSWORD"]
-        ):
-            return Response(
-                "Could not verify your access level for that URL.\n"
-                "You have to login with proper credentials",
-                401,
-                {"WWW-Authenticate": 'Basic realm="Login Required"'},
-            )
-        return await f(*args, **kwargs)
-
-    return decorated
-
-
 # handle default address, show demo html page from ./test_form.html
 @app.route("/", methods=["GET"])
+@requires_auth
 async def test_form():
     return Path(get_abs_path("./webui/index.html")).read_text()
 
@@ -87,20 +165,22 @@ async def health_check():
 # send message to agent (async UI)
 @app.route("/msg", methods=["POST"])
 async def handle_message_async():
-    return await handle_message(False)
+    result = await handle_message(False)
+    return result
 
 
 # send message to agent (synchronous API)
 @app.route("/msg_sync", methods=["POST"])
 async def handle_msg_sync():
-    return await handle_message(True)
+    result = await handle_message(True)
+    return result
 
 
 async def handle_message(sync: bool):
     try:
 
         # data sent to the server
-        input = request.get_json()
+        input = await request.get_json()
         text = input.get("text", "")
         ctxid = input.get("context", "")
         blev = input.get("broadcast", 1)
@@ -146,10 +226,15 @@ async def handle_message(sync: bool):
 # pausing/unpausing the agent
 @app.route("/pause", methods=["POST"])
 async def pause():
+    result = await pause_async()
+    return result
+
+
+async def pause_async():
     try:
 
         # data sent to the server
-        input = request.get_json()
+        input = await request.get_json()
         paused = input.get("paused", False)
         ctxid = input.get("context", "")
 
@@ -178,9 +263,14 @@ async def pause():
 # load chats from json
 @app.route("/loadChats", methods=["POST"])
 async def load_chats():
+    result = await load_chats_async()
+    return result
+
+
+async def load_chats_async():
     try:
         # data sent to the server
-        input = request.get_json()
+        input = await request.get_json()
         chats = input.get("chats", [])
         if not chats:
             raise Exception("No chats provided")
@@ -207,9 +297,14 @@ async def load_chats():
 # load chats from json
 @app.route("/exportChat", methods=["POST"])
 async def export_chat():
+    result = await export_chat_async()
+    return result
+
+
+async def export_chat_async():
     try:
         # data sent to the server
-        input = request.get_json()
+        input = await request.get_json()
         ctxid = input.get("ctxid", "")
         if not ctxid:
             raise Exception("No context id provided")
@@ -238,10 +333,15 @@ async def export_chat():
 # restarting with new agent0
 @app.route("/reset", methods=["POST"])
 async def reset():
+    result = await reset_async()
+    return result
+
+
+async def reset_async():
     try:
 
         # data sent to the server
-        input = request.get_json()
+        input = await request.get_json()
         ctxid = input.get("context", "")
 
         # context instance - get or create
@@ -268,10 +368,15 @@ async def reset():
 # killing context
 @app.route("/remove", methods=["POST"])
 async def remove():
+    result = await remove_async()
+    return result
+
+
+async def remove_async():
     try:
 
         # data sent to the server
-        input = request.get_json()
+        input = await request.get_json()
         ctxid = input.get("context", "")
 
         # context instance - get or create
@@ -297,10 +402,15 @@ async def remove():
 # Web UI polling
 @app.route("/poll", methods=["POST"])
 async def poll():
+    result = await poll_async()
+    return result
+
+
+async def poll_async():
     try:
 
         # data sent to the server
-        input = request.get_json()
+        input = await request.get_json()
         ctxid = input.get("context", None)
         from_no = input.get("log_from", 0)
 
@@ -346,6 +456,12 @@ async def poll():
     response_json = json.dumps(response)
     return Response(response=response_json, status=200, mimetype="application/json")
     # return jsonify(response)
+
+
+@app.route("/protected")
+@requires_auth
+async def protected():
+    return jsonify({"message": "This is protected content!"})
 
 
 def run():
