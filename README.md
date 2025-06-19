@@ -105,10 +105,10 @@ sequenceDiagram
 
 ```mermaid
 graph TD
-    X(Agent Zero Core) --> P[Prompts (Personas, Behavior)];
-    X --> T[Tools (Custom Logic)];
-    X --> I[Instruments (Scripts, Procedures)];
-    X --> E[Extensions (Framework Modifications)];
+    X(Agent Zero Core) --> P["Prompts (Personas, Behavior)"];
+    X --> T["Tools (Custom Logic)"];
+    X --> I["Instruments (Scripts, Procedures)"];
+    X --> E["Extensions (Framework Modifications)"];
 
     style X fill:#0A192F,stroke:#0A192F,stroke-width:2px,color:#fff
     style P fill:#00A8E8,stroke:#00A8E8,stroke-width:2px,color:#fff
