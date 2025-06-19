@@ -37,7 +37,7 @@
 graph TD
     A[User] --> B(Agent Zero Core);
     B --> C[Persistent Memory];
-    B --> D[Tools (Code, Search, etc.)];
+    B --> D["Tools (Code, Search, etc.)"];
     B --> E[Customizable Prompts];
     B --> F[Multi-agent Cooperation];
     B --> G[Knowledge Base];
