@@ -10,6 +10,7 @@ verify memory with online
     "thoughts": [
         "...",
     ],
+    "headline": "Searching knowledge base and online resources",
     "tool_name": "knowledge_tool",
     "tool_args": {
         "question": "How to...",

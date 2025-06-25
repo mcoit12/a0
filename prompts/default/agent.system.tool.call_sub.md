@@ -17,6 +17,7 @@ example usage
         "The result seems to be ok but...",
         "I will ask a coder subordinate to fix...",
     ],
+    "headline": "Delegating coding fix to subordinate agent",
     "tool_name": "call_subordinate",
     "tool_args": {
         "message": "...",
